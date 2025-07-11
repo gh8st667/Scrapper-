@@ -60,7 +60,7 @@ def get_vinted_items(filters):
         "price_to": filters.get("price_max", 9999),
         "currency": filters.get("currency", "EUR"),
         "page": 1,
-        "per_page": 5,
+        "per_page": 1,
         "order": "newest_first"
     }
 
@@ -82,7 +82,7 @@ def get_vinted_items(filters):
         return []
 
 
-async def check_channel_loop(channel_id, filters, interval=5):
+async def check_channel_loop(channel_id, filters, interval=0):
     print(f"🟢 Démarrage boucle check pour channel {channel_id}")
     while True:
         print(f"🔄 Check items pour channel {channel_id}")
@@ -219,7 +219,7 @@ async def add_vinted_channel(ctx, url: str, readonly: bool = False):
     if channel_id in tasks:
         tasks[channel_id].cancel()
     tasks[channel_id] = asyncio.create_task(
-        check_channel_loop(channel_id, filters, interval=5))
+        check_channel_loop(channel_id, filters, interval=0))
 
     await ctx.send(
         f"✅ Configuration {'readonly' if readonly else 'modifiable'} "
@@ -316,7 +316,7 @@ async def add_channel(ctx, name: str, url: str, readonly: bool = False):
             return
 
         tasks[channel_id] = asyncio.create_task(
-            check_channel_loop(channel_id, filters, interval=5))
+            check_channel_loop(channel_id, filters, interval=0))
 
         await ctx.send(f"🛠️ Salon `{name}` configuré avec succès ! "
                        f"Mode : {'readonly' if readonly else 'modifiable'}")
