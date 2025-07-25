@@ -96,7 +96,6 @@ async def create_stealth_session():
         limit_per_host=2,
         ttl_dns_cache=300,
         use_dns_cache=True,
-        keepalive_timeout=60,
         enable_cleanup_closed=True,
         force_close=True,  # Force la fermeture des connexions
         ssl=False,  # Désactive SSL pour éviter les checks
