@@ -1,14 +1,23 @@
 # @copyright 2025 Peyronon Arno
 import os
 import json
-import requests
+import aiohttp
+import asyncio
 import discord
 from discord.ext import commands
 from discord.ui import View, Button
-import asyncio
 from urllib.parse import urlparse, parse_qs
+import async_timeout
+import random
 
 CONFIG_FILE = "config.json"
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+    "Mozilla/5.0 (X11; Linux x86_64)",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X)",
+]
 
 
 def load_config():
@@ -16,7 +25,7 @@ def load_config():
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
-        print(f"❌ Erreur lecture {CONFIG_FILE}")
+        print(f"\u274c Erreur lecture {CONFIG_FILE}")
         return {}
 
 
@@ -42,17 +51,13 @@ cache_urls_per_channel = {channel_id: set() for channel_id in channel_configs}
 tasks = {}
 
 
-def get_vinted_items(filters):
-    session = requests.Session()
+async def get_vinted_items_async(filters):
+    url = "https://www.vinted.fr/api/v2/catalog/items"
     headers = {
-        "User-Agent": "Mozilla/5.0",
+        "User-Agent": random.choice(USER_AGENTS),
         "Accept": "application/json, text/plain, */*",
         "Referer": "https://www.vinted.fr/vetements",
     }
-    home_resp = session.get("https://www.vinted.fr/vetements", headers=headers)
-    if home_resp.status_code != 200:
-        print("Erreur chargement Vinted")
-        return []
 
     base_params = {
         "search_text": filters.get("search_text", ""),
@@ -60,49 +65,51 @@ def get_vinted_items(filters):
         "price_to": filters.get("price_max", 9999),
         "currency": filters.get("currency", "EUR"),
         "page": 1,
-        "per_page": 1,
-        "order": "newest_first"
+        "per_page": 5,
+        "order": "newest_first",
     }
 
-    # Ajouter les filtres multiples
-    for key in [
-            "catalog_ids", "brand_ids", "status_ids", "color_ids", "size_ids"
-    ]:
+    for key in ["catalog_ids", "brand_ids", "status_ids", "color_ids", "size_ids"]:
         if filters.get(key):
             base_params[key] = ",".join(map(str, filters[key]))
 
-    resp = session.get("https://www.vinted.fr/api/v2/catalog/items",
-                       headers=headers,
-                       params=base_params)
-
-    if resp.status_code == 200:
-        return resp.json().get("items", [])
-    else:
-        print(f"Erreur API Vinted: {resp.status_code}")
+    try:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with async_timeout.timeout(10):
+                async with session.get(url, params=base_params) as resp:
+                    if resp.status != 200:
+                        print(f"\u274c API Vinted retourne {resp.status}")
+                        return []
+                    data = await resp.json()
+                    return data.get("items", [])
+    except asyncio.TimeoutError:
+        print("\u23f1\ufe0f Timeout Vinted API")
+        return []
+    except Exception as e:
+        print(f"\u274c Erreur r\u00e9seau Vinted : {e}")
         return []
 
 
-async def check_channel_loop(channel_id, filters, interval=0):
-    print(f"🟢 Démarrage boucle check pour channel {channel_id}")
+async def check_channel_loop(channel_id, filters, interval=5):
+    print(f"\U0001f7e2 D\u00e9marrage boucle check pour channel {channel_id}")
     while True:
-        print(f"🔄 Check items pour channel {channel_id}")
+        print(f"\U0001f501 Check items pour channel {channel_id}")
         try:
-            items = get_vinted_items(filters)
-            print(
-                f"Nombre d'items récupérés pour channel {channel_id} : {len(items)}"
-            )
+            items = await get_vinted_items_async(filters)
+            print(f"Nombre d'items r\u00e9cup\u00e9r\u00e9s : {len(items)}")
         except Exception as e:
-            print(f"❌ Erreur get_vinted_items channel {channel_id}: {e}")
+            print(f"\u274c Erreur fetch items : {e}")
             items = []
 
-        if not items:
-            print(f"Aucun item trouvé pour channel {channel_id}")
-        else:
+        if items:
             channel = bot.get_channel(int(channel_id))
             if channel is None:
-                print(f"⚠️ Channel {channel_id} introuvable")
+                print(f"\u26a0\ufe0f Channel {channel_id} introuvable")
             else:
-                for item in items:
+                for i, item in enumerate(items):
+                    if i >= 3:
+                        break
+
                     url = item.get("url")
                     if url in cache_urls_per_channel[channel_id]:
                         continue
@@ -110,15 +117,20 @@ async def check_channel_loop(channel_id, filters, interval=0):
                     cache_urls_per_channel[channel_id].add(url)
 
                     brand = item.get("brand_title", "N/A")
-                    size = item.get("size_title") or "Non précisée"
+                    size = item.get("size_title") or "Non pr\u00e9cis\u00e9e"
                     status = item.get("status", "N/A")
-                    price = f"{item['price']['amount']} {item['price']['currency_code']}"
+                    price = (
+                        f"{item['price']['amount']} {item['price']['currency_code']}"
+                    )
                     title = item.get("title", "Annonce Vinted")
 
                     user = item.get("user", {})
                     seller_name = user.get("login", "Vendeur inconnu")
-                    is_business = "👔 Pro" if user.get(
-                        "business", False) else "🧑 Particulier"
+                    is_business = (
+                        "\U0001f454 Pro"
+                        if user.get("business", False)
+                        else "\U0001f9d1 Particulier"
+                    )
 
                     photo = item.get("photo", {})
                     thumbnails = photo.get("thumbnails", [])
@@ -137,12 +149,16 @@ async def check_channel_loop(channel_id, filters, interval=0):
                     embed = discord.Embed(
                         title=title,
                         url=url,
-                        description=(f"👤 **{seller_name}**\n"
-                                     f"{is_business}\n"
-                                     f"👟 {brand} | 📏 Taille : {size}"),
+                        description=(
+                            f"\U0001f464 **{seller_name}**\n"
+                            f"{is_business}\n"
+                            f"\U0001f45f {brand} | \U0001f4cf Taille : {size}"
+                        ),
                         color=0x00B2FF,
                     )
-                    embed.add_field(name="🛍️ État", value=status, inline=True)
+                    embed.add_field(
+                        name="\U0001f6cd\ufe0f \u00c9tat", value=status, inline=True
+                    )
                     embed.add_field(name="💸 Prix", value=price, inline=True)
                     if image_urls:
                         embed.set_image(url=image_urls[0])
@@ -156,19 +172,23 @@ async def check_channel_loop(channel_id, filters, interval=0):
                         await channel.send(embed=embed, view=view)
                     except Exception as e:
                         print(f"Erreur en envoyant dans {channel.name} : {e}")
-
-        await asyncio.sleep(interval)
+        await asyncio.sleep(random.uniform(3, 7))
 
 
 def parse_vinted_url_to_filters(url):
     try:
+        print(f"🔍 Parsing URL : {url}")
         parsed = urlparse(url)
         query = parse_qs(parsed.query)
+        print(f"📦 Query parsed : {query}")
 
         def get_ids(key):
             return [
-                int(v) for k, vs in query.items() if k.startswith(key)
-                for v in vs if v.isdigit()
+                int(v)
+                for k, vs in query.items()
+                if k.startswith(key)
+                for v in vs
+                if v.isdigit()
             ]
 
         filters = {
@@ -189,14 +209,24 @@ def parse_vinted_url_to_filters(url):
         return None
 
 
+async def clear_channel_cache_loop():
+    while True:
+        print("🧹 Purge des caches URL par salon...")
+        for channel_id in cache_urls_per_channel:
+            print(
+                f"   - Vider le cache du salon {channel_id} ({len(cache_urls_per_channel[channel_id])} éléments)"
+            )
+            cache_urls_per_channel[channel_id].clear()
+        await asyncio.sleep(3600)
+
+
 @bot.command()
 async def add_vinted_channel(ctx, url: str, readonly: bool = False):
     channel_id = str(ctx.channel.id)
 
     existing_config = config_json.get(channel_id)
     if existing_config and existing_config.get("readonly", False):
-        await ctx.send(
-            "🔒 Ce salon est en mode readonly. Configuration inchangée.")
+        await ctx.send("🔒 Ce salon est en mode readonly. Configuration inchangée.")
         return
 
     filters = parse_vinted_url_to_filters(url)
@@ -219,61 +249,13 @@ async def add_vinted_channel(ctx, url: str, readonly: bool = False):
     if channel_id in tasks:
         tasks[channel_id].cancel()
     tasks[channel_id] = asyncio.create_task(
-        check_channel_loop(channel_id, filters, interval=0))
+        check_channel_loop(channel_id, filters, interval=5)
+    )
 
     await ctx.send(
         f"✅ Configuration {'readonly' if readonly else 'modifiable'} "
-        f"ajoutée et monitoring lancé pour ce salon.")
-
-
-@bot.command()
-async def show_config(ctx):
-    channel_id = str(ctx.channel.id)
-    filters = channel_configs.get(channel_id)
-    if not filters:
-        await ctx.send("❌ Ce salon n'a pas de configuration.")
-        return
-    msg = (f"Filtres pour ce salon :\n"
-           f"- search_text : {filters.get('search_text', '')}\n"
-           f"- brands : {filters.get('brands', [])}\n"
-           f"- status_ids : {filters.get('status_ids', [])}\n"
-           f"- price_min : {filters.get('price_min', 0)}\n"
-           f"- price_max : {filters.get('price_max', 9999)}\n"
-           f"- readonly : {filters.get('readonly', False)}")
-    await ctx.send(msg)
-
-
-@bot.command()
-async def stop(ctx):
-    channel_id = str(ctx.channel.id)
-
-    if channel_id not in channel_configs:
-        await ctx.send("❌ Ce salon n'a pas de configuration active.")
-        return
-
-    channel_configs.pop(channel_id, None)
-    cache_urls_per_channel.pop(channel_id, None)
-
-    task = tasks.pop(channel_id, None)
-    if task:
-        task.cancel()
-
-    if channel_id in config_json:
-        config_json.pop(channel_id)
-        save_config(config_json)
-
-    await ctx.send(
-        "🛑 Monitoring arrêté et configuration supprimée pour ce salon.")
-
-
-@bot.event
-async def on_ready():
-    print(f"✅ Connecté en tant que {bot.user.name}")
-    print(channel_configs)
-    for channel_id, filters in channel_configs.items():
-
-        tasks[channel_id] = asyncio.create_task(
-            check_channel_loop(channel_id, filters))
+        f"ajoutée et monitoring lancé pour ce salon."
+    )
 
 
 @bot.command()
@@ -287,7 +269,6 @@ async def add_channel(ctx, name: str, url: str, readonly: bool = False):
         await ctx.send(f"⚠️ Un salon nommé `{name}` existe déjà.")
         return
 
-    # Créer le salon
     try:
         new_channel = await guild.create_text_channel(name)
         await ctx.send(f"✅ Salon créé : {new_channel.mention}")
@@ -296,7 +277,6 @@ async def add_channel(ctx, name: str, url: str, readonly: bool = False):
         return
 
     if url:
-        # Appliquer la configuration Vinted
         filters = parse_vinted_url_to_filters(url)
         if not filters:
             await ctx.send("❌ URL invalide ou filtres non reconnus.")
@@ -316,10 +296,13 @@ async def add_channel(ctx, name: str, url: str, readonly: bool = False):
             return
 
         tasks[channel_id] = asyncio.create_task(
-            check_channel_loop(channel_id, filters, interval=0))
+            check_channel_loop(channel_id, filters, interval=5)
+        )
 
-        await ctx.send(f"🛠️ Salon `{name}` configuré avec succès ! "
-                       f"Mode : {'readonly' if readonly else 'modifiable'}")
+        await ctx.send(
+            f"🛠️ Salon `{name}` configuré avec succès ! "
+            f"Mode : {'readonly' if readonly else 'modifiable'}"
+        )
 
 
 @bot.command()
@@ -343,6 +326,68 @@ async def delete_channel(ctx):
         await channel.delete()
     except Exception as e:
         await ctx.send(f"❌ Erreur suppression salon : {e}")
+
+
+@bot.command()
+async def show_config(ctx):
+    channel_id = str(ctx.channel.id)
+    filters = channel_configs.get(channel_id)
+    if not filters:
+        await ctx.send("❌ Ce salon n'a pas de configuration.")
+        return
+    msg = (
+        f"Filtres pour ce salon :\n"
+        f"- search_text : {filters.get('search_text', '')}\n"
+        f"- brands : {filters.get('brands', [])}\n"
+        f"- status_ids : {filters.get('status_ids', [])}\n"
+        f"- price_min : {filters.get('price_min', 0)}\n"
+        f"- price_max : {filters.get('price_max', 9999)}\n"
+        f"- readonly : {filters.get('readonly', False)}"
+    )
+    await ctx.send(msg)
+
+
+@bot.command()
+async def stop(ctx):
+    channel_id = str(ctx.channel.id)
+
+    if channel_id not in channel_configs:
+        await ctx.send("❌ Ce salon n'a pas de configuration active.")
+        return
+
+    channel_configs.pop(channel_id, None)
+    cache_urls_per_channel.pop(channel_id, None)
+
+    task = tasks.pop(channel_id, None)
+    if task:
+        task.cancel()
+
+    if channel_id in config_json:
+        config_json.pop(channel_id)
+        save_config(config_json)
+
+    await ctx.send("🛑 Monitoring arrêté et configuration supprimée pour ce salon.")
+
+
+@bot.event
+async def on_ready():
+    print(f"✅ Connecté en tant que {bot.user.name}")
+    print(channel_configs)
+    for channel_id, filters in channel_configs.items():
+        tasks[channel_id] = asyncio.create_task(
+            check_channel_loop(channel_id, filters, interval=5)
+        )
+    asyncio.create_task(clear_channel_cache_loop())
+
+
+@bot.event
+async def on_disconnect():
+    print("🔌 Le bot a été déconnecté de Discord.")
+
+
+@bot.event
+async def on_resumed():
+    print("🔄 Le bot a repris une session Discord après une déconnexion.")
 
 
 bot.run(token)
