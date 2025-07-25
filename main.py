@@ -10,28 +10,19 @@ import asyncio
 from urllib.parse import urlparse, parse_qs
 import random
 import time
-from aiohttp_socks import ProxyConnector
+import hashlib
+import uuid
 
 CONFIG_FILE = "config.json"
 
-# Pool de User-Agents réalistes
+# User-Agents encore plus récents et variés
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/121.0",
-]
-
-# Pool de referers réalistes
-REFERERS = [
-    "https://www.vinted.fr/",
-    "https://www.vinted.fr/vetements",
-    "https://www.vinted.fr/femmes",
-    "https://www.vinted.fr/hommes",
-    "https://www.google.com/",
-    "https://www.google.fr/",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0",
 ]
 
 
@@ -64,80 +55,133 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 cache_urls_per_channel = {channel_id: set() for channel_id in channel_configs}
 tasks = {}
 
-# Session partagée avec rotation des headers
-session_pool = []
-current_session_index = 0
+# Session globale avec réinitialisation périodique
+global_session = None
+session_created_at = 0
 last_request_time = {}
 
 
-async def get_session():
-    """Récupère une session avec des headers rotatifs"""
-    global current_session_index
+async def create_stealth_session():
+    """Crée une session avec maximum de stealth"""
 
-    if not session_pool:
-        await create_session_pool()
+    # Générer un fingerprint unique
+    session_id = str(uuid.uuid4())[:8]
+    timestamp = str(int(time.time() * 1000))
 
-    session = session_pool[current_session_index]
-    current_session_index = (current_session_index + 1) % len(session_pool)
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": "https://www.vinted.fr/",
+        "Origin": "https://www.vinted.fr",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Ch-Ua": '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-Session-Id": session_id,
+        "X-Timestamp": timestamp,
+    }
+
+    # Configuration avancée du connector
+    connector = aiohttp.TCPConnector(
+        limit=5,  # Limite encore plus les connexions
+        limit_per_host=2,
+        ttl_dns_cache=300,
+        use_dns_cache=True,
+        keepalive_timeout=60,
+        enable_cleanup_closed=True,
+        force_close=True,  # Force la fermeture des connexions
+        ssl=False,  # Désactive SSL pour éviter les checks
+    )
+
+    timeout = aiohttp.ClientTimeout(total=20, connect=15, sock_read=10)
+
+    session = aiohttp.ClientSession(
+        headers=headers,
+        connector=connector,
+        timeout=timeout,
+        cookie_jar=aiohttp.CookieJar(),
+        trust_env=True,
+    )
+
     return session
 
 
-async def create_session_pool():
-    """Crée un pool de sessions avec différents headers"""
-    global session_pool
+async def get_session():
+    """Récupère la session globale et la recrée si nécessaire"""
+    global global_session, session_created_at
 
-    for _ in range(3):  # 3 sessions différentes
-        headers = {
-            "User-Agent": random.choice(USER_AGENTS),
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Referer": random.choice(REFERERS),
-            "DNT": "1",
-            "Connection": "keep-alive",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache",
-        }
+    current_time = time.time()
 
-        # Configuration du connector avec timeout plus long
-        connector = aiohttp.TCPConnector(
-            limit=10,
-            limit_per_host=5,
-            ttl_dns_cache=300,
-            use_dns_cache=True,
-            keepalive_timeout=30,
-            enable_cleanup_closed=True,
-        )
+    # Recrée la session toutes les 10 minutes
+    if (
+        global_session is None
+        or global_session.closed
+        or current_time - session_created_at > 300
+    ):
 
-        timeout = aiohttp.ClientTimeout(total=15, connect=10)
-        session = aiohttp.ClientSession(
-            headers=headers,
-            connector=connector,
-            timeout=timeout,
-            cookie_jar=aiohttp.CookieJar(),
-        )
-        session_pool.append(session)
+        if global_session and not global_session.closed:
+            await global_session.close()
+
+        print("🔄 Création d'une nouvelle session stealth")
+        global_session = await create_stealth_session()
+        session_created_at = current_time
+
+        # Warmup de la session avec plusieurs pages
+        await warmup_session(global_session)
+
+    return global_session
 
 
-async def simulate_human_behavior():
-    """Simule un comportement humain avec des délais aléatoires"""
-    await asyncio.sleep(random.uniform(0.5, 2.0))
+async def warmup_session(session):
+    """Chauffe la session en visitant plusieurs pages comme un humain"""
+    warmup_urls = [
+        "https://www.vinted.fr/",
+        "https://www.vinted.fr/vetements",
+        "https://www.vinted.fr/femmes/vetements",
+    ]
+
+    for url in warmup_urls:
+        try:
+            async with session.get(url, allow_redirects=True) as resp:
+                if resp.status == 200:
+                    await resp.text()
+            await asyncio.sleep(random.uniform(1, 3))
+        except:
+            pass  # Ignore les erreurs de warmup
+
+
+def generate_request_signature():
+    """Génère une signature unique pour chaque requête"""
+    timestamp = str(int(time.time() * 1000))
+    random_str = str(uuid.uuid4())[:8]
+    signature = hashlib.md5(f"{timestamp}{random_str}".encode()).hexdigest()[:16]
+    return timestamp, signature
 
 
 async def get_vinted_items_async(filters, channel_id):
-    """Version améliorée avec gestion des erreurs et retry"""
+    """Version ultra-stealth avec techniques d'évasion avancées"""
     current_time = time.time()
 
-    # Rate limiting par channel (minimum 3 secondes entre les requêtes)
+    # Rate limiting STRICT : minimum 15 secondes entre requêtes par channel
     if channel_id in last_request_time:
         time_since_last = current_time - last_request_time[channel_id]
-        if time_since_last < 3:
-            await asyncio.sleep(3 - time_since_last)
+        min_delay = 15 + random.uniform(0, 5)  # 15-20 secondes
+        if time_since_last < min_delay:
+            await asyncio.sleep(min_delay - time_since_last)
 
     last_request_time[channel_id] = time.time()
+
+    # Paramètres de base avec anti-détection
+    timestamp, signature = generate_request_signature()
 
     base_params = {
         "search_text": filters.get("search_text", ""),
@@ -145,68 +189,105 @@ async def get_vinted_items_async(filters, channel_id):
         "price_to": filters.get("price_max", 9999),
         "currency": filters.get("currency", "EUR"),
         "page": 1,
-        "per_page": 8,  # Réduit pour éviter les timeouts
+        "per_page": 6,  # Encore moins d'items
         "order": "newest_first",
+        "_": timestamp,
+        "sig": signature,
+        "v": "2.1",
+        "locale": "fr",
+        "t": int(time.time()),
     }
 
     for key in ["catalog_ids", "brand_ids", "status_ids", "color_ids", "size_ids"]:
         if filters.get(key):
             base_params[key] = ",".join(map(str, filters[key]))
 
-    max_retries = 3
+    max_retries = 2  # Moins de retry pour éviter d'insister
     for attempt in range(max_retries):
         try:
             session = await get_session()
 
-            # Simuler une visite de la page principale d'abord
-            if attempt == 0:  # Seulement au premier essai
+            # Simuler navigation humaine AVANT chaque requête API
+            if random.random() < 0.3:  # 30% de chance
                 try:
-                    async with session.get(
-                        "https://www.vinted.fr", ssl=False
-                    ) as warmup:
-                        await warmup.text()
-                    await simulate_human_behavior()
+                    browse_url = random.choice(
+                        [
+                            "https://www.vinted.fr/vetements",
+                            "https://www.vinted.fr/femmes",
+                            "https://www.vinted.fr/hommes",
+                        ]
+                    )
+                    async with session.get(browse_url) as browse_resp:
+                        if browse_resp.status == 200:
+                            await browse_resp.text()
+                    await asyncio.sleep(random.uniform(2, 4))
                 except:
-                    pass  # On ignore les erreurs de warmup
+                    pass
 
-            # Requête principale avec timeout plus court
-            async with async_timeout.timeout(12):
-                # Ajouter des paramètres anti-détection
-                extra_params = {
-                    "timestamp": int(time.time() * 1000),
-                    "_": int(time.time() * 1000) + random.randint(1, 1000),
-                }
-                final_params = {**base_params, **extra_params}
+            # Headers spécifiques pour cette requête
+            request_headers = {
+                "X-Request-ID": str(uuid.uuid4()),
+                "X-Client-Version": "web-2.1.0",
+                "X-Timestamp": timestamp,
+                "X-Signature": signature,
+            }
 
+            async with async_timeout.timeout(15):
                 async with session.get(
                     "https://www.vinted.fr/api/v2/catalog/items",
-                    params=final_params,
-                    ssl=False,
+                    params=base_params,
+                    headers=request_headers,
+                    allow_redirects=True,
                 ) as resp:
+
+                    response_text = await resp.text()
+
                     if resp.status == 200:
-                        data = await resp.json()
-                        items = data.get("items", [])
-                        print(
-                            f"✅ {len(items)} items récupérés pour channel {channel_id}"
-                        )
-                        return items
+                        try:
+                            data = json.loads(response_text)
+                            items = data.get("items", [])
+                            print(
+                                f"✅ {len(items)} items récupérés pour channel {channel_id}"
+                            )
+                            return items
+                        except json.JSONDecodeError:
+                            print(f"❌ Réponse invalide pour channel {channel_id}")
+                            return []
+
                     elif resp.status == 403:
                         print(
-                            f"⚠️ 403 détecté pour channel {channel_id}, tentative {attempt + 1}/{max_retries}"
+                            f"🚫 403 - IP probablement blacklistée pour channel {channel_id}"
                         )
+                        # En cas de 403, attendre BEAUCOUP plus longtemps
                         if attempt < max_retries - 1:
-                            # Délai exponentiel + randomisation
-                            delay = (2**attempt) + random.uniform(1, 3)
+                            delay = 60 + random.uniform(0, 30)  # 1-1.5 minutes
+                            print(f"⏸️ Pause de {delay:.1f}s avant retry")
                             await asyncio.sleep(delay)
+                            # Forcer la recréation de session
+                            global global_session, session_created_at
+                            if global_session and not global_session.closed:
+                                await global_session.close()
+                            global_session = None
+                            session_created_at = 0
                             continue
+
                     elif resp.status == 429:
-                        print(f"⚠️ Rate limit détecté pour channel {channel_id}")
-                        await asyncio.sleep(random.uniform(5, 10))
+                        print(f"⚠️ Rate limit sévère détecté pour channel {channel_id}")
+                        await asyncio.sleep(random.uniform(30, 60))  # 30s-1min
                         continue
+
+                    elif resp.status in [500, 502, 503]:
+                        print(
+                            f"⚠️ Erreur serveur {resp.status} pour channel {channel_id}"
+                        )
+                        await asyncio.sleep(random.uniform(10, 20))
+                        continue
+
                     else:
                         print(
                             f"❌ Erreur API Vinted pour channel {channel_id}: {resp.status}"
                         )
+                        print(f"Response: {response_text[:200]}...")
                         return []
 
         except asyncio.TimeoutError:
@@ -214,21 +295,22 @@ async def get_vinted_items_async(filters, channel_id):
                 f"⏱️ Timeout pour channel {channel_id}, tentative {attempt + 1}/{max_retries}"
             )
             if attempt < max_retries - 1:
-                await asyncio.sleep(random.uniform(2, 5))
+                await asyncio.sleep(random.uniform(10, 20))
         except Exception as e:
-            print(
-                f"❌ Exception get_vinted_items_async channel {channel_id}, tentative {attempt + 1}: {e}"
-            )
+            print(f"❌ Exception get_vinted_items_async channel {channel_id}: {e}")
             if attempt < max_retries - 1:
-                await asyncio.sleep(random.uniform(1, 3))
+                await asyncio.sleep(random.uniform(5, 15))
 
     return []
 
 
-async def check_channel_loop(channel_id, filters, interval=8):
-    """Boucle de vérification avec interval adaptatif"""
-    print(f"🟢 Démarrage boucle check pour channel {channel_id}")
+async def check_channel_loop(channel_id, filters, interval=25):
+    """Boucle avec interval BEAUCOUP plus élevé"""
+    print(
+        f"🟢 Démarrage boucle check pour channel {channel_id} (interval: {interval}s)"
+    )
     consecutive_errors = 0
+    last_success = time.time()
 
     while True:
         print(f"🔄 Check items pour channel {channel_id}")
@@ -241,8 +323,18 @@ async def check_channel_loop(channel_id, filters, interval=8):
                 print(
                     f"Aucun item trouvé pour channel {channel_id} (erreurs consécutives: {consecutive_errors})"
                 )
+
+                # Si trop d'erreurs, pause très longue
+                if consecutive_errors > 3:
+                    pause_time = min(consecutive_errors * 30, 300)  # Max 5 minutes
+                    print(f"🛑 Pause de {pause_time}s pour channel {channel_id}")
+                    await asyncio.sleep(pause_time)
+                    continue
+
             else:
-                consecutive_errors = 0  # Reset du compteur d'erreurs
+                consecutive_errors = 0
+                last_success = time.time()
+
                 channel = bot.get_channel(int(channel_id))
                 if channel is None:
                     print(f"⚠️ Channel {channel_id} introuvable")
@@ -304,8 +396,7 @@ async def check_channel_loop(channel_id, filters, interval=8):
 
                         try:
                             await channel.send(embed=embed, view=view)
-                            # Petit délai entre les envois Discord
-                            await asyncio.sleep(0.5)
+                            await asyncio.sleep(1)  # Délai entre envois Discord
                         except Exception as e:
                             print(f"Erreur en envoyant dans {channel.name} : {e}")
 
@@ -313,18 +404,17 @@ async def check_channel_loop(channel_id, filters, interval=8):
             consecutive_errors += 1
             print(f"❌ Erreur générale channel {channel_id}: {e}")
 
-        # Interval adaptatif basé sur les erreurs
-        if consecutive_errors > 5:
-            current_interval = min(interval * 2, 30)  # Max 30 secondes
+        # Si pas de succès depuis > 30 minutes, pause très longue
+        if time.time() - last_success > 1800:  # 30 minutes
             print(
-                f"⚠️ Nombreuses erreurs pour channel {channel_id}, interval augmenté à {current_interval}s"
+                f"😴 Aucun succès depuis 30min pour channel {channel_id}, pause de 10min"
             )
-        elif consecutive_errors > 2:
-            current_interval = interval + 5
-        else:
-            current_interval = interval
+            await asyncio.sleep(600)  # 10 minutes
+            last_success = time.time()  # Reset
 
-        await asyncio.sleep(current_interval + random.uniform(-1, 1))
+        # Interval très élevé avec randomisation
+        current_interval = interval + random.uniform(5, 15)
+        await asyncio.sleep(current_interval)
 
 
 def parse_vinted_url_to_filters(url):
@@ -377,16 +467,13 @@ async def clear_channel_cache_loop():
         print("🧹 Purge des caches URL par salon...")
         for channel_id in cache_urls_per_channel:
             cache_size = len(cache_urls_per_channel[channel_id])
-            if cache_size > 100:  # Limite le cache à 100 URLs par channel
-                # Garde seulement les 50 plus récentes
+            if cache_size > 50:  # Cache encore plus petit
                 urls_list = list(cache_urls_per_channel[channel_id])
-                cache_urls_per_channel[channel_id] = set(urls_list[-50:])
+                cache_urls_per_channel[channel_id] = set(urls_list[-25:])
                 print(
-                    f"   - Cache du salon {channel_id} réduit de {cache_size} à 50 éléments"
+                    f"   - Cache du salon {channel_id} réduit de {cache_size} à 25 éléments"
                 )
-            else:
-                print(f"   - Cache du salon {channel_id}: {cache_size} éléments")
-        await asyncio.sleep(1800)  # Toutes les 30 minutes au lieu d'1h
+        await asyncio.sleep(1800)
 
 
 @bot.command()
@@ -418,14 +505,15 @@ async def add_vinted_channel(ctx, url: str, readonly: bool = False):
     if channel_id in tasks:
         tasks[channel_id].cancel()
 
-    # Interval plus élevé pour éviter les blocages
+    # Interval très élevé : 25 secondes minimum
     tasks[channel_id] = asyncio.create_task(
-        check_channel_loop(channel_id, filters, interval=8)
+        check_channel_loop(channel_id, filters, interval=25)
     )
 
     await ctx.send(
         f"✅ Configuration {'readonly' if readonly else 'modifiable'} "
-        f"ajoutée et monitoring lancé pour ce salon (interval: 8s)."
+        f"ajoutée et monitoring lancé pour ce salon (interval: 25s minimum).\n"
+        f"⚠️ **Nouveau système ultra-stealth activé** - Les requêtes seront BEAUCOUP plus espacées pour éviter les blocages."
     )
 
 
@@ -467,7 +555,7 @@ async def add_channel(ctx, name: str, url: str, readonly: bool = False):
             return
 
         tasks[channel_id] = asyncio.create_task(
-            check_channel_loop(channel_id, filters, interval=8)
+            check_channel_loop(channel_id, filters, interval=25)
         )
 
         await ctx.send(
@@ -543,20 +631,17 @@ async def stop(ctx):
 @bot.event
 async def on_ready():
     print(f"✅ Connecté en tant que {bot.user.name}")
-
-    # Initialiser le pool de sessions
-    await create_session_pool()
-
     print(f"📋 Configurations chargées: {len(channel_configs)}")
+
     for channel_id, filters in channel_configs.items():
-        # Délai progressif pour éviter le spam au démarrage
-        await asyncio.sleep(random.uniform(1, 3))
+        # Délai important entre chaque démarrage pour éviter le spam
+        await asyncio.sleep(random.uniform(5, 15))
         tasks[channel_id] = asyncio.create_task(
-            check_channel_loop(channel_id, filters, interval=8)
+            check_channel_loop(channel_id, filters, interval=25)
         )
 
     asyncio.create_task(clear_channel_cache_loop())
-    print("🚀 Toutes les tâches lancées")
+    print("🚀 Toutes les tâches lancées avec système ultra-stealth")
 
 
 @bot.event
@@ -569,17 +654,16 @@ async def on_resumed():
     print("🔄 Le bot a repris une session Discord après une déconnexion.")
 
 
-async def cleanup_sessions():
-    """Nettoie les sessions à la fermeture"""
-    for session in session_pool:
-        if not session.closed:
-            await session.close()
+# Nettoyage à la fermeture
+async def cleanup():
+    global global_session
+    if global_session and not global_session.closed:
+        await global_session.close()
 
 
-# Ajout du nettoyage des sessions à la fermeture
 import atexit
 
-atexit.register(lambda: asyncio.run(cleanup_sessions()))
+atexit.register(lambda: asyncio.run(cleanup()))
 
 bot.run(token)
 # @copyright 2025 Peyronon Arno
