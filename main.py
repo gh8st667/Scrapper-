@@ -66,13 +66,9 @@ async def get_vinted_items_async(filters):
 
     try:
         async with aiohttp.ClientSession(headers=headers) as session:
-            # ⚠️ Visite la page web avant pour initialiser les cookies
             async with session.get("https://www.vinted.fr") as _:
-                await asyncio.sleep(
-                    0.2
-                )  # petite pause pour simuler le comportement humain
+                await asyncio.sleep(0.2)
 
-            # Appel API réel
             async with async_timeout.timeout(10):
                 async with session.get(
                     "https://www.vinted.fr/api/v2/catalog/items", params=base_params
