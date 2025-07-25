@@ -1,23 +1,14 @@
 # @copyright 2025 Peyronon Arno
 import os
 import json
-import aiohttp
-import asyncio
+import requests
 import discord
 from discord.ext import commands
 from discord.ui import View, Button
+import asyncio
 from urllib.parse import urlparse, parse_qs
-import async_timeout
-import random
 
 CONFIG_FILE = "config.json"
-
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-    "Mozilla/5.0 (X11; Linux x86_64)",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X)",
-]
 
 
 def load_config():
@@ -25,7 +16,7 @@ def load_config():
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
-        print(f"\u274c Erreur lecture {CONFIG_FILE}")
+        print(f"❌ Erreur lecture {CONFIG_FILE}")
         return {}
 
 
@@ -51,13 +42,17 @@ cache_urls_per_channel = {channel_id: set() for channel_id in channel_configs}
 tasks = {}
 
 
-async def get_vinted_items_async(filters):
-    url = "https://www.vinted.fr/api/v2/catalog/items"
+def get_vinted_items(filters):
+    session = requests.Session()
     headers = {
-        "User-Agent": random.choice(USER_AGENTS),
+        "User-Agent": "Mozilla/5.0",
         "Accept": "application/json, text/plain, */*",
         "Referer": "https://www.vinted.fr/vetements",
     }
+    home_resp = session.get("https://www.vinted.fr/vetements", headers=headers)
+    if home_resp.status_code != 200:
+        print("Erreur chargement Vinted")
+        return []
 
     base_params = {
         "search_text": filters.get("search_text", ""),
@@ -69,47 +64,43 @@ async def get_vinted_items_async(filters):
         "order": "newest_first",
     }
 
+    # Ajouter les filtres multiples
     for key in ["catalog_ids", "brand_ids", "status_ids", "color_ids", "size_ids"]:
         if filters.get(key):
             base_params[key] = ",".join(map(str, filters[key]))
 
-    try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with async_timeout.timeout(10):
-                async with session.get(url, params=base_params) as resp:
-                    if resp.status != 200:
-                        print(f"\u274c API Vinted retourne {resp.status}")
-                        return []
-                    data = await resp.json()
-                    return data.get("items", [])
-    except asyncio.TimeoutError:
-        print("\u23f1\ufe0f Timeout Vinted API")
-        return []
-    except Exception as e:
-        print(f"\u274c Erreur r\u00e9seau Vinted : {e}")
+    resp = session.get(
+        "https://www.vinted.fr/api/v2/catalog/items",
+        headers=headers,
+        params=base_params,
+    )
+
+    if resp.status_code == 200:
+        return resp.json().get("items", [])
+    else:
+        print(f"Erreur API Vinted: {resp.status_code}")
         return []
 
 
 async def check_channel_loop(channel_id, filters, interval=5):
-    print(f"\U0001f7e2 D\u00e9marrage boucle check pour channel {channel_id}")
+    print(f"🟢 Démarrage boucle check pour channel {channel_id}")
     while True:
-        print(f"\U0001f501 Check items pour channel {channel_id}")
+        print(f"🔄 Check items pour channel {channel_id}")
         try:
-            items = await get_vinted_items_async(filters)
-            print(f"Nombre d'items r\u00e9cup\u00e9r\u00e9s : {len(items)}")
+            items = get_vinted_items(filters)
+            print(f"Nombre d'items récupérés pour channel {channel_id} : {len(items)}")
         except Exception as e:
-            print(f"\u274c Erreur fetch items : {e}")
+            print(f"❌ Erreur get_vinted_items channel {channel_id}: {e}")
             items = []
 
-        if items:
+        if not items:
+            print(f"Aucun item trouvé pour channel {channel_id}")
+        else:
             channel = bot.get_channel(int(channel_id))
             if channel is None:
-                print(f"\u26a0\ufe0f Channel {channel_id} introuvable")
+                print(f"⚠️ Channel {channel_id} introuvable")
             else:
-                for i, item in enumerate(items):
-                    if i >= 3:
-                        break
-
+                for item in items:
                     url = item.get("url")
                     if url in cache_urls_per_channel[channel_id]:
                         continue
@@ -117,7 +108,7 @@ async def check_channel_loop(channel_id, filters, interval=5):
                     cache_urls_per_channel[channel_id].add(url)
 
                     brand = item.get("brand_title", "N/A")
-                    size = item.get("size_title") or "Non pr\u00e9cis\u00e9e"
+                    size = item.get("size_title") or "Non précisée"
                     status = item.get("status", "N/A")
                     price = (
                         f"{item['price']['amount']} {item['price']['currency_code']}"
@@ -127,9 +118,7 @@ async def check_channel_loop(channel_id, filters, interval=5):
                     user = item.get("user", {})
                     seller_name = user.get("login", "Vendeur inconnu")
                     is_business = (
-                        "\U0001f454 Pro"
-                        if user.get("business", False)
-                        else "\U0001f9d1 Particulier"
+                        "👔 Pro" if user.get("business", False) else "🧑 Particulier"
                     )
 
                     photo = item.get("photo", {})
@@ -150,15 +139,13 @@ async def check_channel_loop(channel_id, filters, interval=5):
                         title=title,
                         url=url,
                         description=(
-                            f"\U0001f464 **{seller_name}**\n"
+                            f"👤 **{seller_name}**\n"
                             f"{is_business}\n"
-                            f"\U0001f45f {brand} | \U0001f4cf Taille : {size}"
+                            f"👟 {brand} | 📏 Taille : {size}"
                         ),
                         color=0x00B2FF,
                     )
-                    embed.add_field(
-                        name="\U0001f6cd\ufe0f \u00c9tat", value=status, inline=True
-                    )
+                    embed.add_field(name="🛍️ État", value=status, inline=True)
                     embed.add_field(name="💸 Prix", value=price, inline=True)
                     if image_urls:
                         embed.set_image(url=image_urls[0])
@@ -172,7 +159,8 @@ async def check_channel_loop(channel_id, filters, interval=5):
                         await channel.send(embed=embed, view=view)
                     except Exception as e:
                         print(f"Erreur en envoyant dans {channel.name} : {e}")
-        await asyncio.sleep(random.uniform(3, 7))
+
+        await asyncio.sleep(interval)
 
 
 def parse_vinted_url_to_filters(url):
