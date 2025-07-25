@@ -175,25 +175,35 @@ def parse_vinted_url_to_filters(url):
                 for k, vs in query.items():
                     if k.startswith(key):
                         for v in vs:
-                            if v.isdigit():
+                            try:
                                 ids.append(int(v))
+                            except ValueError:
+                                pass
             return ids
 
         filters = {
             "search_text": query.get("search_text", [""])[0],
-            "price_min": int(query.get("price_from", [0])[0]),
-            "price_max": int(query.get("price_to", [9999])[0]),
+            "price_min": (
+                int(query.get("price_from", [0])[0])
+                if query.get("price_from", [None])[0]
+                else 0
+            ),
+            "price_max": (
+                int(query.get("price_to", [9999])[0])
+                if query.get("price_to", [None])[0]
+                else 9999
+            ),
             "catalog_ids": get_ids("catalog", "catalog_ids", "catalog_ids[]"),
             "brand_ids": get_ids("brand_ids", "brand_ids[]"),
-            "status_ids": get_ids("status_ids"),
-            "color_ids": get_ids("color_ids"),
-            "size_ids": get_ids("size_ids"),
+            "status_ids": get_ids("status_ids", "status_ids[]"),
+            "color_ids": get_ids("color_ids", "color_ids[]"),
+            "size_ids": get_ids("size_ids", "size_ids[]"),
             "currency": query.get("currency", ["EUR"])[0],
         }
 
         return filters
     except Exception as e:
-        print(f"Erreur parse_vinted_url_to_filters : {e}")
+        print(f"❌ Erreur parse_vinted_url_to_filters : {e}")
         return None
 
 
