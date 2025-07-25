@@ -169,21 +169,22 @@ def parse_vinted_url_to_filters(url):
         query = parse_qs(parsed.query)
         print(f"📦 Query parsed : {query}")
 
-        def get_ids(key):
-            return [
-                int(v)
-                for k, vs in query.items()
-                if k.startswith(key)
-                for v in vs
-                if v.isdigit()
-            ]
+        def get_ids(*possible_keys):
+            ids = []
+            for key in possible_keys:
+                for k, vs in query.items():
+                    if k.startswith(key):
+                        for v in vs:
+                            if v.isdigit():
+                                ids.append(int(v))
+            return ids
 
         filters = {
             "search_text": query.get("search_text", [""])[0],
             "price_min": int(query.get("price_from", [0])[0]),
             "price_max": int(query.get("price_to", [9999])[0]),
-            "catalog_ids": get_ids("catalog"),
-            "brand_ids": get_ids("brand_ids"),
+            "catalog_ids": get_ids("catalog", "catalog_ids", "catalog_ids[]"),
+            "brand_ids": get_ids("brand_ids", "brand_ids[]"),
             "status_ids": get_ids("status_ids"),
             "color_ids": get_ids("color_ids"),
             "size_ids": get_ids("size_ids"),
