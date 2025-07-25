@@ -45,10 +45,11 @@ tasks = {}
 
 async def get_vinted_items_async(filters):
     headers = {
-        "User-Agent": "Mozilla/5.0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
         "Referer": "https://www.vinted.fr/vetements",
     }
+
     base_params = {
         "search_text": filters.get("search_text", ""),
         "price_from": filters.get("price_min", 0),
@@ -58,17 +59,23 @@ async def get_vinted_items_async(filters):
         "per_page": 5,
         "order": "newest_first",
     }
+
     for key in ["catalog_ids", "brand_ids", "status_ids", "color_ids", "size_ids"]:
         if filters.get(key):
             base_params[key] = ",".join(map(str, filters[key]))
 
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            # ⚠️ Visite la page web avant pour initialiser les cookies
+            async with session.get("https://www.vinted.fr") as _:
+                await asyncio.sleep(
+                    0.2
+                )  # petite pause pour simuler le comportement humain
+
+            # Appel API réel
             async with async_timeout.timeout(10):
                 async with session.get(
-                    "https://www.vinted.fr/api/v2/catalog/items",
-                    headers=headers,
-                    params=base_params,
+                    "https://www.vinted.fr/api/v2/catalog/items", params=base_params
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
