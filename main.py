@@ -1,7 +1,8 @@
 # @copyright 2025 Peyronon Arno
 import os
 import json
-import requests
+import aiohttp
+import async_timeout
 import discord
 from discord.ext import commands
 from discord.ui import View, Button
@@ -42,18 +43,12 @@ cache_urls_per_channel = {channel_id: set() for channel_id in channel_configs}
 tasks = {}
 
 
-def get_vinted_items(filters):
-    session = requests.Session()
+async def get_vinted_items_async(filters):
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json, text/plain, */*",
         "Referer": "https://www.vinted.fr/vetements",
     }
-    home_resp = session.get("https://www.vinted.fr/vetements", headers=headers)
-    if home_resp.status_code != 200:
-        print("Erreur chargement Vinted")
-        return []
-
     base_params = {
         "search_text": filters.get("search_text", ""),
         "price_from": filters.get("price_min", 0),
@@ -63,22 +58,26 @@ def get_vinted_items(filters):
         "per_page": 5,
         "order": "newest_first",
     }
-
-    # Ajouter les filtres multiples
     for key in ["catalog_ids", "brand_ids", "status_ids", "color_ids", "size_ids"]:
         if filters.get(key):
             base_params[key] = ",".join(map(str, filters[key]))
 
-    resp = session.get(
-        "https://www.vinted.fr/api/v2/catalog/items",
-        headers=headers,
-        params=base_params,
-    )
-
-    if resp.status_code == 200:
-        return resp.json().get("items", [])
-    else:
-        print(f"Erreur API Vinted: {resp.status_code}")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with async_timeout.timeout(10):
+                async with session.get(
+                    "https://www.vinted.fr/api/v2/catalog/items",
+                    headers=headers,
+                    params=base_params,
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data.get("items", [])
+                    else:
+                        print(f"Erreur API Vinted: {resp.status}")
+                        return []
+    except Exception as e:
+        print(f"❌ Exception get_vinted_items_async: {e}")
         return []
 
 
@@ -87,10 +86,10 @@ async def check_channel_loop(channel_id, filters, interval=5):
     while True:
         print(f"🔄 Check items pour channel {channel_id}")
         try:
-            items = get_vinted_items(filters)
+            items = await get_vinted_items_async(filters)
             print(f"Nombre d'items récupérés pour channel {channel_id} : {len(items)}")
         except Exception as e:
-            print(f"❌ Erreur get_vinted_items channel {channel_id}: {e}")
+            print(f"❌ Erreur get_vinted_items_async channel {channel_id}: {e}")
             items = []
 
         if not items:
