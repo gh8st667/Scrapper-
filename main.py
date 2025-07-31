@@ -82,7 +82,7 @@ def get_vinted_items(filters):
         return []
 
 
-async def check_channel_loop(channel_id, filters, interval=5):
+async def check_channel_loop(channel_id, filters, interval=120):
     print(f"🟢 Démarrage boucle check pour channel {channel_id}")
     while True:
         print(f"🔄 Check items pour channel {channel_id}")
@@ -237,7 +237,7 @@ async def add_vinted_channel(ctx, url: str, readonly: bool = False):
     if channel_id in tasks:
         tasks[channel_id].cancel()
     tasks[channel_id] = asyncio.create_task(
-        check_channel_loop(channel_id, filters, interval=5)
+        check_channel_loop(channel_id, filters, interval=120)
     )
 
     await ctx.send(
@@ -284,7 +284,7 @@ async def add_channel(ctx, name: str, url: str, readonly: bool = False):
             return
 
         tasks[channel_id] = asyncio.create_task(
-            check_channel_loop(channel_id, filters, interval=5)
+            check_channel_loop(channel_id, filters, interval=120)
         )
 
         await ctx.send(
@@ -363,7 +363,7 @@ async def on_ready():
     print(channel_configs)
     for channel_id, filters in channel_configs.items():
         tasks[channel_id] = asyncio.create_task(
-            check_channel_loop(channel_id, filters, interval=5)
+            check_channel_loop(channel_id, filters, interval=120)
         )
     asyncio.create_task(clear_channel_cache_loop())
 
